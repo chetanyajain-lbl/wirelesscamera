@@ -1,4 +1,4 @@
-from flask import Flask, render_template, Response, request, redirect, url_for, session
+from flask import Flask, render_template, Response, request, redirect, url_for, session, jsonify
 from pypylon import pylon
 import cv2
 from flask_session import Session
@@ -46,13 +46,25 @@ gain_max = camera.Gain.GetMax()
 count_trigger = False
 threshold = 0
 
+# Initialize status variables
+max_count = 0
+mean_count = 0
+streaming = False
+
 def adjust_exposure(exposure):
     """Adjust exposure to the nearest higher valid value."""
     exposure2 = exposure + 0.019
     return exposure2
 
+def get_current_settings():
+    """Get the current exposure and gain settings."""
+    current_exposure = camera.ExposureTime.GetValue() / 1000.0  # Convert microseconds to milliseconds
+    current_gain = camera.Gain.GetValue()
+    return current_exposure, current_gain
+
 def gen_frames():
-    global count_trigger, threshold
+    global count_trigger, threshold, max_count, mean_count, streaming
+    streaming = True
     while camera.IsGrabbing():
         try:
             if camera.TriggerMode.GetValue() == 'Off':
@@ -62,10 +74,13 @@ def gen_frames():
                 image = converter.Convert(grabResult)
                 img = image.GetArray()
                 
-                if count_trigger:
-                    mean_count = np.mean(img)
-                    if mean_count <= threshold:
-                        continue  # Skip the current image and show the white image instead
+                max_count = int(np.max(img))  # Convert to int
+                mean_count = float(np.mean(img))  # Convert to float
+                mean_count = "%0.3f" % mean_count
+                
+                if count_trigger and mean_count <= threshold:
+                    # Create a white image
+                    img = np.ones_like(img) * 255
 
                 ret, buffer = cv2.imencode('.jpg', img)
                 frame = buffer.tobytes()
@@ -75,6 +90,7 @@ def gen_frames():
         except pylon.TimeoutException as e:
             print(f"TimeoutException: {e}")
             continue
+    streaming = False
 
 @app.route('/')
 def index():
@@ -136,6 +152,16 @@ def camera_control():
             camera.TriggerMode.SetValue('Off')
 
         return ('', 204)
+    else:
+        return redirect(url_for('login'))
+
+@app.route('/camera_status')
+def camera_status():
+    if 'logged_in' in session:
+        if streaming:
+            return jsonify(max_count=int(max_count), mean_count=float(mean_count))
+        else:
+            return jsonify(max_count="N/A", mean_count="N/A")
     else:
         return redirect(url_for('login'))
 

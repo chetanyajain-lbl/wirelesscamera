@@ -21,10 +21,11 @@ PASSWORD = config['password']
 # Initialize the Basler camera
 camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
 camera.Open()
+camera.PixelFormat.SetValue('Mono8')  # Set camera to 8-bit mode
 camera.TriggerMode.SetValue('Off')  # Ensure the trigger mode is off for continuous acquisition
 camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
 converter = pylon.ImageFormatConverter()
-converter.OutputPixelFormat = pylon.PixelType_BGR8packed
+converter.OutputPixelFormat = pylon.PixelType_Mono8
 converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
 
 # Set initial values for exposure and gain
@@ -41,12 +42,17 @@ exposure_max = camera.ExposureTime.GetMax() / 1000.0
 gain_min = camera.Gain.GetMin()
 gain_max = camera.Gain.GetMax()
 
+# Initialize count_trigger and threshold
+count_trigger = False
+threshold = 0
+
 def adjust_exposure(exposure):
     """Adjust exposure to the nearest higher valid value."""
     exposure2 = exposure + 0.019
     return exposure2
 
 def gen_frames():
+    global count_trigger, threshold
     while camera.IsGrabbing():
         try:
             if camera.TriggerMode.GetValue() == 'Off':
@@ -55,6 +61,12 @@ def gen_frames():
             if grabResult.GrabSucceeded():
                 image = converter.Convert(grabResult)
                 img = image.GetArray()
+                
+                if count_trigger:
+                    mean_count = np.mean(img)
+                    if mean_count <= threshold:
+                        continue  # Skip the current image and show the white image instead
+
                 ret, buffer = cv2.imencode('.jpg', img)
                 frame = buffer.tobytes()
                 yield (b'--frame\r\n'
@@ -100,10 +112,17 @@ def video_feed():
 
 @app.route('/camera_control', methods=['POST'])
 def camera_control():
+    global count_trigger, threshold
+
     if 'logged_in' in session:
         gain = request.form.get('gain', type=float)
         exposure = request.form.get('exposure', type=float)
         triggered = request.form.get('triggered', type=bool)
+        count_trigger = request.form.get('count_trigger') == 'on'
+        threshold = request.form.get('threshold', type=int)
+
+        if threshold is not None:
+            threshold = max(0, min(threshold, 255))  # Ensure threshold is between 0 and 255
 
         if gain is not None:
             camera.Gain.SetValue(gain)

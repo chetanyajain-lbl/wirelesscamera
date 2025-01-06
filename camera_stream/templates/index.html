@@ -4,10 +4,21 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
     <title>Camera Stream</title>
+    <style>
+      .camera-status {
+        margin-top: 10px;
+        font-size: 14px;
+      }
+    </style>
   </head>
   <body>
     <h1>Live Camera Stream</h1>
     <img src="{{ url_for('video_feed') }}" width="640" height="480">
+    
+    <div class="camera-status">
+      Max Count: <span id="max_count">N/A</span>, Mean Count: <span id="mean_count">N/A</span>
+    </div>
+    
     <h2>Camera Controls</h2>
     <form action="/camera_control" method="post">
       <label for="gain">Gain:</label>
@@ -27,7 +38,22 @@
       <br>
       <input type="submit" value="Apply">
     </form>
+    
     <br>
     <a href="{{ url_for('logout') }}">Logout</a>
+    
+    <script>
+      function fetchStatus() {
+        fetch('/camera_status')
+          .then(response => response.json())
+          .then(data => {
+            document.getElementById('max_count').textContent = data.max_count;
+            document.getElementById('mean_count').textContent = data.mean_count;
+          })
+          .catch(error => console.error('Error fetching camera status:', error));
+      }
+      
+      setInterval(fetchStatus, 1000);  // Fetch status every second
+    </script>
   </body>
 </html>
