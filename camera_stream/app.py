@@ -2,15 +2,18 @@ from flask import Flask, render_template, Response, request, redirect, url_for, 
 from pypylon import pylon
 import cv2
 from flask_session import Session
+from flask_socketio import SocketIO, emit
 import numpy as np
 import time
 import yaml
 import os
+import threading
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # Generate a random secret key for session management
 app.config['SESSION_TYPE'] = 'filesystem'
 Session(app)
+socketio = SocketIO(app)
 
 # Load configuration from config.yaml
 with open('config.yaml', 'r') as file:
@@ -51,6 +54,9 @@ max_count = 0
 mean_count = 0
 streaming = False
 
+# Lock for accessing the camera
+camera_lock = threading.Lock()
+
 def adjust_exposure(exposure):
     """Adjust exposure to the nearest higher valid value."""
     exposure2 = exposure + 0.019
@@ -66,31 +72,44 @@ def gen_frames():
     global count_trigger, threshold, max_count, mean_count, streaming
     streaming = True
     while camera.IsGrabbing():
-        try:
-            if camera.TriggerMode.GetValue() == 'Off':
-                time.sleep(0.1)  # Limit to 10 frames per second (1/10 seconds per frame)
-            grabResult = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-            if grabResult.GrabSucceeded():
-                image = converter.Convert(grabResult)
-                img = image.GetArray()
-                
-                max_count = int(np.max(img))  # Convert to int
-                mean_count = float(np.mean(img))  # Convert to float
-                mean_count = "%0.3f" % mean_count
-                
-                if count_trigger and mean_count <= threshold:
-                    # Create a white image
-                    img = np.ones_like(img) * 255
+        with camera_lock:
+            try:
+                if camera.TriggerMode.GetValue() == 'Off':
+                    time.sleep(0.1)  # Limit to 10 frames per second (1/10 seconds per frame)
+                grabResult = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
+                if grabResult.GrabSucceeded():
+                    image = converter.Convert(grabResult)
+                    img = image.GetArray()
+                    
+                    max_count = int(np.max(img))  # Convert to int
+                    mean_count = round(float(np.mean(img)), 3)  # Convert to float
+                    
+                    if count_trigger and mean_count <= threshold:
+                        # Create a white image
+                        img = np.ones_like(img) * 255
 
-                ret, buffer = cv2.imencode('.jpg', img)
-                frame = buffer.tobytes()
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            grabResult.Release()
-        except pylon.TimeoutException as e:
-            print(f"TimeoutException: {e}")
-            continue
+                    ret, buffer = cv2.imencode('.jpg', img)
+                    frame = buffer.tobytes()
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                grabResult.Release()
+            except pylon.TimeoutException as e:
+                print(f"TimeoutException: {e}")
+                continue
     streaming = False
+
+def update_camera_settings(gain, exposure, triggered):
+    with camera_lock:
+        if gain is not None:
+            camera.Gain.SetValue(gain)
+        if exposure is not None:
+            exposure = adjust_exposure(exposure)
+            camera.ExposureTime.SetValue(exposure * 1000.0)  # Convert milliseconds to microseconds
+        if triggered is not None:
+            if triggered:
+                camera.TriggerMode.SetValue('On')
+            else:
+                camera.TriggerMode.SetValue('Off')
 
 @app.route('/')
 def index():
@@ -140,16 +159,11 @@ def camera_control():
         if threshold is not None:
             threshold = max(0, min(threshold, 255))  # Ensure threshold is between 0 and 255
 
-        if gain is not None:
-            camera.Gain.SetValue(gain)
-        if exposure is not None:
-            exposure = adjust_exposure(exposure)
-            camera.ExposureTime.SetValue(exposure * 1000.0)  # Convert milliseconds to microseconds
+        # Update camera settings in a separate thread
+        threading.Thread(target=update_camera_settings, args=(gain, exposure, triggered)).start()
 
-        if triggered:
-            camera.TriggerMode.SetValue('On')
-        else:
-            camera.TriggerMode.SetValue('Off')
+        # Broadcast the new settings to all connected clients
+        socketio.emit('update_settings', {'gain': gain, 'exposure': exposure, 'count_trigger': count_trigger, 'threshold': threshold})
 
         return ('', 204)
     else:
@@ -166,4 +180,4 @@ def camera_status():
         return redirect(url_for('login'))
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    socketio.run(app, host='0.0.0.0', port=5000)

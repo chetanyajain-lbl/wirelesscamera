@@ -10,6 +10,8 @@
         font-size: 14px;
       }
     </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script> <!-- Include jQuery library -->
   </head>
   <body>
     <h1>Live Camera Stream</h1>
@@ -20,7 +22,7 @@
     </div>
     
     <h2>Camera Controls</h2>
-    <form action="/camera_control" method="post">
+    <form id="camera-controls" action="/camera_control" method="post">
       <label for="gain">Gain:</label>
       <input type="number" id="gain" name="gain" min="{{ gain_min }}" max="{{ gain_max }}" step="0.1" value="{{ initial_gain }}">
       <br>
@@ -43,6 +45,15 @@
     <a href="{{ url_for('logout') }}">Logout</a>
     
     <script>
+      const socket = io();
+
+      socket.on('update_settings', data => {
+        document.getElementById('gain').value = data.gain;
+        document.getElementById('exposure').value = data.exposure;
+        document.getElementById('count_trigger').checked = data.count_trigger;
+        document.getElementById('threshold').value = data.threshold;
+      });
+
       function fetchStatus() {
         fetch('/camera_status')
           .then(response => response.json())
@@ -54,6 +65,25 @@
       }
       
       setInterval(fetchStatus, 1000);  // Fetch status every second
+
+      // Handle form submission with AJAX
+      $('#camera-controls').on('submit', function(event) {
+        event.preventDefault(); // Prevent the form from submitting the traditional way
+
+        const formData = $(this).serialize(); // Serialize the form data
+
+        $.ajax({
+          type: 'POST',
+          url: '/camera_control',
+          data: formData,
+          success: function(response) {
+            console.log('Settings updated successfully');
+          },
+          error: function(error) {
+            console.error('Error updating settings:', error);
+          }
+        });
+      });
     </script>
   </body>
 </html>
